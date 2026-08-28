@@ -135,6 +135,7 @@ custom_components/pi_hole_lists/
   manifest.json
   strings.json
   translations/en.json
+  brand/             # HACS brand assets: icon.png (256x256), logo.png (512x512)
 hacs.json
 README.md
 DESIGN.md            # this file
