@@ -1,0 +1,14 @@
+{
+  "domain": "pi_hole_lists",
+  "name": "Pi-hole Lists",
+  "codeowners": ["@dvx76"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/dvx76/ha-pi-hole-lists",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/dvx76/ha-pi-hole-lists/issues",
+  "loggers": ["hole"],
+  "requirements": ["hole==0.9.2"],
+  "version": "0.1.0"
+}
