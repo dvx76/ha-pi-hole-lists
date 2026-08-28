@@ -63,6 +63,9 @@ class PiHoleListsConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=self._user_schema(user_input or {}),
+            description_placeholders={
+                "url_example": "http://pi.hole:8081",
+            },
             errors=errors,
         )
 

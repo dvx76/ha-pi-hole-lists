@@ -22,7 +22,7 @@
           "url": "URL",
           "verify_ssl": "Verify SSL certificate"
         },
-        "description": "Connect to a Pi-hole v6 instance using its app password. Example: http://pi.hole:8081",
+        "description": "Connect to a Pi-hole v6 instance using its app password. Example: {url_example}",
         "title": "Pi-hole Lists"
       }
     }
