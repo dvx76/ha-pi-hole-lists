@@ -142,3 +142,25 @@ async def test_turn_off_disables_list():
     assert entity.is_on is False
     entity.async_write_ha_state.assert_called_once()
     coordinator.async_refresh.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_on_merges_slim_response_into_current_data():
+    """A slim response must not wipe details of the current list data."""
+    coordinator = _coordinator({LIST_ID: BLOCK_LIST})
+    entity = _entity(coordinator)
+    # Real FTL responses carry the full row, but stay safe if they do not.
+    coordinator.api.set_list_enabled.return_value = {
+        "id": LIST_ID,
+        "status": "enabled",
+    }
+
+    await entity.async_turn_on()
+
+    data = coordinator.data[LIST_ID]
+    assert data["address"] == BLOCK_LIST["address"]
+    assert data["comment"] == BLOCK_LIST["comment"]
+    assert data["status"] == "enabled"
+    # Without "enabled" in the response, the old value is kept until the
+    # coordinator refresh re-syncs the row.
+    assert data["enabled"] is BLOCK_LIST["enabled"]

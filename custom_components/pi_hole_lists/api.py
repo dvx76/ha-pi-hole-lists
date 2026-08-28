@@ -114,11 +114,21 @@ class PiHoleV6Lists(HoleV6):
                     )
 
                 try:
-                    return await response.json()
+                    response_data = await response.json()
                 except (aiohttp.ContentTypeError, ValueError) as err:
                     raise HoleResponseError(
                         f"Invalid response updating list {address}"
                     ) from err
+
+                # FTL answers a single-item update with the full list wrapped
+                # in {"lists": [...]} (plus a "processed" summary). Fall back
+                # to returning the body as-is for older response shapes.
+                if "lists" in response_data:
+                    lists = response_data["lists"]
+                    if not lists:
+                        raise HoleResponseError(f"No list returned for {address}")
+                    return lists[0]
+                return response_data
 
         except (asyncio.TimeoutError, aiohttp.ClientError, socket.gaierror) as err:
             raise HoleConnectionError(f"Cannot update list {address}: {err}") from err

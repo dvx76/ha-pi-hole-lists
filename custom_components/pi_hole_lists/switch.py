@@ -85,6 +85,11 @@ class PiHoleListSwitch(PiHoleListsEntity, SwitchEntity):
         updated = await self.coordinator.api.set_list_enabled(
             self.list_data["address"], LIST_TYPE_BLOCK, enabled
         )
-        self.coordinator.data[self._list_id] = updated
+        # Merge the response over the current list so no details are lost if
+        # the response is slim; the coordinator refresh below re-syncs anyway.
+        self.coordinator.data[self._list_id] = {
+            **self.coordinator.data[self._list_id],
+            **updated,
+        }
         self.async_write_ha_state()
         await self.coordinator.async_refresh()

@@ -11,7 +11,12 @@ from urllib.parse import unquote
 import aiohttp
 import pytest
 from aioresponses import aioresponses
-from hole.exceptions import HoleAuthenticationError, HoleConnectionError, HoleError
+from hole.exceptions import (
+    HoleAuthenticationError,
+    HoleConnectionError,
+    HoleError,
+    HoleResponseError,
+)
 
 from custom_components.pi_hole_lists.api import PiHoleV6Lists
 
@@ -51,6 +56,19 @@ ALLOW_LIST = {
 def _session_payload(sid: str = "sid-123", csrf: str = "csrf-456") -> dict:
     """Return a typical Pi-hole v6 auth response."""
     return {"session": {"valid": True, "sid": sid, "csrf": csrf, "validity": 300}}
+
+
+def _list_update_payload(list_obj: dict) -> dict:
+    """Return the real FTL response shape for a single-item list update.
+
+    Verified in FTL source (api_list.c, v6.1 and master): the PUT handler
+    applies the payload and answers with the row read back, wrapped in
+    ``{"lists": [...], "processed": {...}}``.
+    """
+    return {
+        "lists": [list_obj],
+        "processed": {"errors": [], "success": [{"item": list_obj["address"]}]},
+    }
 
 
 def _request_calls(mocked: aioresponses, method: str, path: str) -> list:
@@ -191,7 +209,7 @@ async def test_set_list_enabled_sends_put():
         mocked.put(
             f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
             status=200,
-            payload=updated,
+            payload=_list_update_payload(updated),
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
@@ -218,6 +236,40 @@ async def test_set_list_enabled_sends_put():
 
 
 @pytest.mark.asyncio
+async def test_set_list_enabled_passes_through_bare_list_response():
+    """A response without the "lists" wrapper is returned as-is."""
+    updated = {**BLOCK_LIST, "enabled": True}
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.put(
+            f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
+            status=200,
+            payload=updated,
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            result = await api.set_list_enabled(ADDRESS, "block", True)
+
+        assert result == updated
+
+
+@pytest.mark.asyncio
+async def test_set_list_enabled_raises_on_empty_lists_wrapper():
+    """An empty "lists" wrapper surfaces as HoleResponseError."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.put(
+            f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
+            status=200,
+            payload={"lists": []},
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            with pytest.raises(HoleResponseError):
+                await api.set_list_enabled(ADDRESS, "block", True)
+
+
+@pytest.mark.asyncio
 async def test_set_list_enabled_reauth_once_on_401():
     """A 401 on the PUT triggers exactly one re-auth and one retry."""
     updated = {**BLOCK_LIST, "enabled": True}
@@ -231,7 +283,7 @@ async def test_set_list_enabled_reauth_once_on_401():
         mocked.put(
             f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
             status=200,
-            payload=updated,
+            payload=_list_update_payload(updated),
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)

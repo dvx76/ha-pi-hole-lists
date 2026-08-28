@@ -45,7 +45,10 @@ All verified against Pi-hole 2025.07.x.
   `{"lists": [{"id", "address", "enabled", "groups", "type", "comment", "number",
   "invalid_domains", "status", "date_added", "date_modified", "date_updated", ...}]}`.
 - `PUT /api/lists/{quote(address, safe="")}?type=block` body `{"enabled": bool}` →
-  returns the updated list object. Partial body accepted.
+  HTTP 200 with the updated row read back, wrapped in
+  `{"lists": [<updated list>], "processed": {...}}` (verified in FTL
+  `api_list.c`, v6.1 and master — the response is not the bare list object).
+  Partial body accepted.
 - State-changing requests may require `X-FTL-CSRF` (from the session) — include when
   present (harmless; matches `HoleV6` behavior).
 - Login attempts are **rate-limited** and concurrent sessions limited: never probe
@@ -63,7 +66,8 @@ config entry (one per Pi-hole)
 │     └─ scan_interval: 5 min default, 1–60 min via options flow
 └── SwitchEntity per list (CoordinatorEntity)
       ├─ is_on = list["enabled"]
-      ├─ turn_on/off: await set_list_enabled(); update data from response; refresh
+      ├─ turn_on/off: await set_list_enabled(); merge response into
+      │  data; refresh
       └─ attrs: id, address, type, groups, comment, number, invalid_domains,
          status, date_updated
 ```
@@ -76,7 +80,9 @@ config entry (one per Pi-hole)
 - `set_list_enabled(address, list_type, enabled)`: `await self.ensure_auth()`, then
   `PUT {base_url}/api/lists/{quote(address, safe="")}?type={list_type}` with
   `json={"enabled": enabled}` and sid/csrf headers; on 401 re-authenticate once and
-  retry (mirror `_fetch_data`); non-200 → `HoleError`; return the updated list dict.
+  retry (mirror `_fetch_data`); non-200 → `HoleError`; unwrap the
+  `{"lists": [...]}` response into the updated list dict (fall back to the body
+  as-is for other shapes).
 
 Reliance on `HoleV6` internals (`_fetch_data`, `_session_id`, `_csrf_token`,
 `ensure_auth`, `base_url`) is the known risk → mitigated by the exact pin and by
@@ -145,7 +151,8 @@ LICENSE              # MIT
 
 - Unit: fake `aiohttp.ClientSession` (aioresponses) for all API paths; assert the
   PUT URL contains the URL-encoded address and `?type=block`, carries `X-FTL-SID`
-  (+ `X-FTL-CSRF` when present), and that a 401 triggers exactly one re-auth retry.
+  (+ `X-FTL-CSRF` when present), unwraps the `{"lists": [...]}` response, and
+  that a 401 triggers exactly one re-auth retry.
 - Integration is not tested against a live Pi-hole in CI; manual two-way sync test
   on a real instance before each release (README checklist).
 
