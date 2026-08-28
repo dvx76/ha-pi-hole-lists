@@ -28,6 +28,19 @@ made in the Pi-hole UI appear in HA within one poll interval (default 5 min).
 - **Scan interval** (1–60 min, default 5): how often list states are polled from
   Pi-hole.
 
+## Naming
+
+Entities use the list's **Comment** (as shown in the Pi-hole UI) — it is
+recommended to give every list a comment, e.g. `StevenBlack hosts` or
+`Block TikTok`.
+
+Without a comment the name is derived from the list URL: GitHub-hosted lists
+(`github.com` / `raw.githubusercontent.com`) are named `owner/repo`, e.g.
+`StevenBlack/hosts`; everything else uses `host/last-path-segment`. The
+entity ID follows the name (prefixed with the Pi-hole device, e.g.
+`switch.pi_hole_lists_..._stevenblack_hosts`), so ambiguous addresses produce
+ambiguous entity IDs — hence the comment recommendation.
+
 ## Development
 
 Tooling is managed with [uv](https://docs.astral.sh/uv/); the lockfile is

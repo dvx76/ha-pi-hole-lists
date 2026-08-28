@@ -25,10 +25,22 @@ STATE_ATTRIBUTES = (
 
 
 def _humanize_address(address: str) -> str:
-    """Turn a list URL into a readable "host/last-path-segment" name."""
+    """Return a human-friendly name for a list URL.
+
+    GitHub-hosted lists (``github.com``, ``raw.githubusercontent.com``) are
+    named ``owner/repo``: most blocklists are hosted there, and the plain
+    host/last-segment fallback would be ambiguous across repos (e.g. two
+    lists both ending in ``hosts``).
+    Everything else falls back to ``host/last-path-segment``.
+    """
     parsed = urlparse(address)
-    host = parsed.netloc or address
     segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        parsed.hostname in ("github.com", "raw.githubusercontent.com")
+        and len(segments) >= 2
+    ):
+        return f"{segments[0]}/{segments[1]}"
+    host = parsed.netloc or address
     if segments:
         return f"{host}/{segments[-1]}"
     return host

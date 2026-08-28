@@ -93,7 +93,9 @@ unit tests covering the paths that use them.
 - Device per config entry: "Pi-hole lists (<host>)".
 - `unique_id = f"{entry_id}-{list_id}"` (multi-entry safe). Trade-off: recreating a
   config entry orphans entities — accepted; documented in README gotchas.
-- `name`: list `comment` if set, else humanized address (host + last path segment).
+- `name`: list `comment` if set, else a humanized address: GitHub-hosted
+  lists (`github.com`, `raw.githubusercontent.com`) are named `owner/repo`,
+  everything else `host + last path segment`.
 - Entities are added/removed on every poll from coordinator data (lists created or
   deleted in the Pi-hole UI appear/disappear accordingly).
 
@@ -141,7 +143,8 @@ tests/
   test_api.py        # aioresponses: auth parse, lists parse, PUT path/headers,
                      # 401 re-auth, session-validity re-auth
   test_coordinator.py # type=block filtering, auth-failed/connection error mapping
-  test_switch.py     # is_on mapping; turn_on/off calls set_list_enabled + refresh
+  test_switch.py     # is_on mapping; turn_on/off + refresh; name fallbacks
+                     # (comment / GitHub owner-repo / host+segment)
 .github/workflows/
   ci.yml             # hacs validate + hassfest + ruff + pytest (py3.13)
 LICENSE              # MIT

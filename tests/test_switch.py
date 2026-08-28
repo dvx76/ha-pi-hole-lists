@@ -88,13 +88,29 @@ def test_name_uses_comment():
 
 
 def test_name_falls_back_to_humanized_address():
-    """Without a comment the name is host plus the last path segment."""
+    """Without a comment the name comes from the list URL."""
     coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": ""}})
     entity = _entity(coordinator)
     assert entity.name == "example.com/ads.txt"
 
     coordinator.data[LIST_ID]["address"] = "http://pi.hole"
     assert entity.name == "pi.hole"
+
+
+def test_name_falls_back_to_github_owner_repo():
+    """GitHub-hosted lists without a comment are named owner/repo."""
+    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": ""}})
+    entity = _entity(coordinator)
+
+    coordinator.data[LIST_ID]["address"] = (
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    )
+    assert entity.name == "StevenBlack/hosts"
+
+    coordinator.data[LIST_ID]["address"] = (
+        "https://github.com/danhorton7/pihole-block-tiktok"
+    )
+    assert entity.name == "danhorton7/pihole-block-tiktok"
 
 
 def test_device_info_per_entry():
