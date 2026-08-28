@@ -1,0 +1,42 @@
+[project]
+name = "ha-pi-hole-lists"
+version = "0.1.0"
+description = "Home Assistant integration exposing Pi-hole v6 blocklists as switches"
+readme = "README.md"
+requires-python = ">=3.13.2"
+license = "MIT"
+authors = [
+    { name = "Fabrice Devaux", email = "fabrice.devaux@gmail.com" },
+]
+# Runtime dependency of the Home Assistant integration; pinned exactly because
+# api.py relies on HoleV6 private internals (see DESIGN.md).
+dependencies = [
+    "hole==0.9.2",
+]
+
+[dependency-groups]
+dev = [
+    "aioresponses>=0.7.6",
+    "homeassistant>=2025.10,<2026.3",
+    "pytest>=8.3",
+    "pytest-aiohttp>=1.1",
+    "ruff>=0.11",
+]
+
+# Not a pip-installable package: this is a HACS custom component delivered
+# through GitHub releases. uv only manages the venv and tooling.
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+# HA-friendly defaults: errors, pyflakes, isort, pycodestyle warnings.
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make custom_components importable regardless of how pytest is invoked.
+pythonpath = ["."]

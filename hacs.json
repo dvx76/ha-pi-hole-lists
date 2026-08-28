@@ -1,0 +1,6 @@
+{
+  "name": "Pi-hole Lists",
+  "content_in_root": false,
+  "homeassistant": "2025.10.0",
+  "render_readme": true
+}
