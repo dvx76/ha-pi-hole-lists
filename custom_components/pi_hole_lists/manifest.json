@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/dvx76/ha-pi-hole-lists/issues",
   "loggers": ["hole"],
   "requirements": ["hole==0.9.2"],
-  "version": "0.1.1"
+  "version": "0.1.2"
 }
