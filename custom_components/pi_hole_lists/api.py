@@ -7,7 +7,9 @@ v6 list endpoints used by this integration:
 
 - ``GET /api/lists``
 - ``PUT /api/lists/{quote(address, safe="")}?type=block`` with body
-  ``{"enabled": bool}``
+  ``{"enabled": bool, "comment": str}`` — the comment must be echoed because
+  FTL's PUT is a full-row upsert that resets absent fields (see
+  ``set_list_enabled``)
 
 The subclass relies on ``HoleV6`` private internals (``_fetch_data``,
 ``_session_id``, ``_csrf_token``, ``ensure_auth``); ``hole==0.9.2`` is pinned
@@ -68,9 +70,24 @@ class PiHoleV6Lists(HoleV6):
         return response["lists"]
 
     async def set_list_enabled(
-        self, address: str, list_type: str, enabled: bool
+        self,
+        address: str,
+        list_type: str,
+        enabled: bool,
+        *,
+        comment: str | None = None,
     ) -> dict:
-        """Enable or disable a list and return its updated state."""
+        """Enable or disable a list and return its updated state.
+
+        FTL's PUT is a full-row upsert (``INSERT ... ON CONFLICT(address,type)
+        DO UPDATE SET enabled, comment, type``), not a merge: any mutable
+        field missing from the payload is reset to its default — ``comment``
+        to NULL, ``enabled`` to true. The current comment must therefore be
+        echoed back in the payload, otherwise toggling the switch silently
+        wipes the list's comment in Pi-hole. Type is carried by the query
+        parameter and groups are only touched when the payload contains a
+        ``groups`` array (which we intentionally never send).
+        """
         await self.ensure_auth()
 
         # Pi-hole matches the list by its URL-encoded address; the query
@@ -80,6 +97,8 @@ class PiHoleV6Lists(HoleV6):
         if self._csrf_token:
             headers["X-FTL-CSRF"] = self._csrf_token
         payload = {"enabled": enabled}
+        if comment is not None:
+            payload["comment"] = comment
 
         try:
             async with asyncio.timeout(self.timeout):

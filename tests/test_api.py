@@ -213,7 +213,9 @@ async def test_set_list_enabled_sends_put():
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
-            result = await api.set_list_enabled(ADDRESS, "block", False)
+            result = await api.set_list_enabled(
+                ADDRESS, "block", False, comment="Example blocklist"
+            )
 
         assert result == updated
 
@@ -232,7 +234,33 @@ async def test_set_list_enabled_sends_put():
         call = put_calls[0]
         assert call.kwargs["headers"]["X-FTL-SID"] == "sid-123"
         assert call.kwargs["headers"]["X-FTL-CSRF"] == "csrf-456"
-        assert call.kwargs["json"] == {"enabled": False}
+        # FTL's PUT replaces the row: the comment must be echoed or it is
+        # reset to NULL (regression: toggling used to wipe the comment and
+        # rename the HA entity to its address fallback).
+        assert call.kwargs["json"] == {
+            "enabled": False,
+            "comment": "Example blocklist",
+        }
+
+
+@pytest.mark.asyncio
+async def test_set_list_enabled_omits_comment_when_none():
+    """Without a known comment the payload keeps only the enabled flag."""
+    updated = {**BLOCK_LIST, "enabled": True}
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.put(
+            f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
+            status=200,
+            payload=_list_update_payload(updated),
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            result = await api.set_list_enabled(ADDRESS, "block", True)
+
+        assert result == updated
+        call = _request_calls(mocked, "PUT", LIST_ENDPOINT)[0]
+        assert call.kwargs["json"] == {"enabled": True}
 
 
 @pytest.mark.asyncio

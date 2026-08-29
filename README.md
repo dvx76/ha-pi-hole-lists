@@ -59,6 +59,8 @@ Before tagging `vX.Y.Z`:
 1. CI green (hacs validate, hassfest, ruff, pytest).
 2. Manual two-way sync test on a real Pi-hole v6:
    - Toggle a switch in HA → state flips in the Pi-hole UI.
+   - Toggle a switch in HA → the list's **Comment** is still shown in the
+     Pi-hole UI (regression guard for the comment-echo on toggle).
    - Edit a list in the Pi-hole UI → HA reflects it within one poll interval.
    - Create and delete a list in the Pi-hole UI → entities appear/disappear.
 3. Bump `version` in `manifest.json`, commit, tag `vX.Y.Z` on main.
@@ -68,6 +70,9 @@ Before tagging `vX.Y.Z`:
 - The session Pi-hole issues is valid 300 s idle, so every poll re-authenticates —
   this is normal, not an error.
 - Toggling a switch affects **all groups** the list belongs to.
+- Toggling a switch echoes the list's current Comment back to Pi-hole — FTL's
+  update replaces the row, so without this the comment would be cleared (and
+  with it the entity's name).
 - Re-adding the integration creates new entities (unique IDs are entry-scoped).
 - Editing a list's URL in Pi-hole keeps its ID, so the HA entity follows it.
 

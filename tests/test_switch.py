@@ -133,7 +133,7 @@ async def test_turn_on_enables_list():
     await entity.async_turn_on()
 
     coordinator.api.set_list_enabled.assert_awaited_once_with(
-        BLOCK_LIST["address"], "block", True
+        BLOCK_LIST["address"], "block", True, comment="Example blocklist"
     )
     assert coordinator.data[LIST_ID] == updated
     assert entity.is_on is True
@@ -152,12 +152,31 @@ async def test_turn_off_disables_list():
     await entity.async_turn_off()
 
     coordinator.api.set_list_enabled.assert_awaited_once_with(
-        BLOCK_LIST["address"], "block", False
+        BLOCK_LIST["address"], "block", False, comment="Example blocklist"
     )
     assert coordinator.data[LIST_ID] == updated
     assert entity.is_on is False
     entity.async_write_ha_state.assert_called_once()
     coordinator.async_refresh.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_on_passes_none_comment_when_list_has_none():
+    """A list without a comment is toggled with comment=None.
+
+    FTL's PUT resets a missing comment to NULL, which is a no-op for a list
+    that already has none — but the comment must never be *dropped* for a
+    list that has one (see test_turn_on_enables_list).
+    """
+    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": None}})
+    entity = _entity(coordinator)
+    coordinator.api.set_list_enabled.return_value = {**BLOCK_LIST, "comment": None}
+
+    await entity.async_turn_on()
+
+    coordinator.api.set_list_enabled.assert_awaited_once_with(
+        BLOCK_LIST["address"], "block", True, comment=None
+    )
 
 
 @pytest.mark.asyncio

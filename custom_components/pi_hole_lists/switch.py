@@ -82,8 +82,15 @@ class PiHoleListSwitch(PiHoleListsEntity, SwitchEntity):
 
     async def _async_set_enabled(self, enabled: bool) -> None:
         """Toggle the list, update state from the response, and refresh."""
+        list_data = self.list_data
         updated = await self.coordinator.api.set_list_enabled(
-            self.list_data["address"], LIST_TYPE_BLOCK, enabled
+            list_data["address"],
+            LIST_TYPE_BLOCK,
+            enabled,
+            # FTL's PUT replaces the whole row: without the comment the
+            # list's comment is wiped, which would rename this entity to
+            # its address fallback on the next poll.
+            comment=list_data.get("comment"),
         )
         # Merge the response over the current list so no details are lost if
         # the response is slim; the coordinator refresh below re-syncs anyway.

@@ -44,11 +44,18 @@ All verified against Pi-hole 2025.07.x.
 - `GET /api/lists` (header `X-FTL-SID: <sid>`) →
   `{"lists": [{"id", "address", "enabled", "groups", "type", "comment", "number",
   "invalid_domains", "status", "date_added", "date_modified", "date_updated", ...}]}`.
-- `PUT /api/lists/{quote(address, safe="")}?type=block` body `{"enabled": bool}` →
-  HTTP 200 with the updated row read back, wrapped in
-  `{"lists": [<updated list>], "processed": {...}}` (verified in FTL
-  `api_list.c`, v6.1 and master — the response is not the bare list object).
-  Partial body accepted.
+- `PUT /api/lists/{quote(address, safe="")}?type=block` body
+  `{"enabled": bool, "comment": str}` → HTTP 200 with the updated row read
+  back, wrapped in `{"lists": [<updated list>], "processed": {...}}`
+  (verified in FTL `src/api/list.c` + `src/database/gravity-db.c`, v6.1 and
+  master — the response is not the bare list object). **The body is a full-row
+  upsert, not a merge**: FTL runs `INSERT ... ON CONFLICT(address,type) DO
+  UPDATE SET enabled=:enabled, comment=:comment, type=:type`, so any mutable
+  field missing from the body is reset — `comment` → NULL, `enabled` → true.
+  The integration always echoes the list's current `comment` (the web UI does
+  the same: `PUT` with `{groups, comment, enabled, type}`); `type` is carried
+  by the query parameter, and `groups` are only touched when the body contains
+  a `groups` array, which the integration intentionally never sends.
 - State-changing requests may require `X-FTL-CSRF` (from the session) — include when
   present (harmless; matches `HoleV6` behavior).
 - Login attempts are **rate-limited** and concurrent sessions limited: never probe
@@ -66,8 +73,8 @@ config entry (one per Pi-hole)
 │     └─ scan_interval: 5 min default, 1–60 min via options flow
 └── SwitchEntity per list (CoordinatorEntity)
       ├─ is_on = list["enabled"]
-      ├─ turn_on/off: await set_list_enabled(); merge response into
-      │  data; refresh
+      ├─ turn_on/off: await set_list_enabled(..., comment=list["comment"]);
+      │  merge response into data; refresh
       └─ attrs: id, address, type, groups, comment, number, invalid_domains,
          status, date_updated
 ```
@@ -77,12 +84,15 @@ config entry (one per Pi-hole)
 `HoleV6` has no list endpoints and its `_fetch_data()` is GET-only, so the subclass:
 
 - `get_lists()`: `resp = await self._fetch_data("/lists")`; return `resp["lists"]`.
-- `set_list_enabled(address, list_type, enabled)`: `await self.ensure_auth()`, then
-  `PUT {base_url}/api/lists/{quote(address, safe="")}?type={list_type}` with
-  `json={"enabled": enabled}` and sid/csrf headers; on 401 re-authenticate once and
-  retry (mirror `_fetch_data`); non-200 → `HoleError`; unwrap the
+- `set_list_enabled(address, list_type, enabled, comment=None)`: `await
+  self.ensure_auth()`, then `PUT {base_url}/api/lists/{quote(address, safe="")}
+  ?type={list_type}` with `json={"enabled": enabled, "comment": comment}`
+  (comment only when known) and sid/csrf headers; on 401 re-authenticate once
+  and retry (mirror `_fetch_data`); non-200 → `HoleError`; unwrap the
   `{"lists": [...]}` response into the updated list dict (fall back to the body
-  as-is for other shapes).
+  as-is for other shapes). The comment must be echoed because FTL's PUT
+  replaces the row and resets a missing `comment` to NULL (regression:
+  toggling used to wipe the comment in Pi-hole, which renamed the HA entity).
 
 Reliance on `HoleV6` internals (`_fetch_data`, `_session_id`, `_csrf_token`,
 `ensure_auth`, `base_url`) is the known risk → mitigated by the exact pin and by
@@ -155,8 +165,9 @@ LICENSE              # MIT
 
 - Unit: fake `aiohttp.ClientSession` (aioresponses) for all API paths; assert the
   PUT URL contains the URL-encoded address and `?type=block`, carries `X-FTL-SID`
-  (+ `X-FTL-CSRF` when present), unwraps the `{"lists": [...]}` response, and
-  that a 401 triggers exactly one re-auth retry.
+  (+ `X-FTL-CSRF` when present), the payload echoes the list's comment,
+  unwraps the `{"lists": [...]}` response, and that a 401 triggers exactly one
+  re-auth retry.
 - Integration is not tested against a live Pi-hole in CI; manual two-way sync test
   on a real instance before each release (README checklist).
 
@@ -166,6 +177,10 @@ LICENSE              # MIT
 - Pi-hole rate-limits failed logins — no probe loops anywhere.
 - `hole` internals are private API surface → exact pin; bump deliberately with tests.
 - `enabled` is global across groups — set expectations in README.
+- FTL's PUT replaces the row: a toggle must echo the list's `comment` or
+  Pi-hole wipes it (which would rename the HA entity to its address fallback).
+  Echoing last-polled data can also overwrite a comment changed in the Pi-hole
+  UI within one poll interval — the coordinator re-syncs on the next poll.
 - Editing a list's address in Pi-hole keeps its `id` → unique_id stays stable.
 
 ## Task order
