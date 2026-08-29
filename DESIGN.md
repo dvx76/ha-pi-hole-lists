@@ -116,7 +116,10 @@ unit tests covering the paths that use them.
   `authenticate()` → `logout()`. `HoleAuthenticationError` → "invalid password";
   `HoleConnectionError` → "cannot connect". No retry loops.
 - `step_reauth`: on `ConfigEntryAuthFailed` from the coordinator (bad password).
-- Options flow: scan interval (minutes, 1–60, default 5).
+- Options flow: scan interval (minutes, 1–60, default 5). The flow reads the
+  entry through the HA-provided `OptionsFlow.config_entry` property (entry_id is
+  `flow.handler`, set before the first step) and never stores it in `__init__` —
+  `config_entry` has no setter since HA 2025.12.
 - Unload: `api.logout()` to release the FTL session.
 
 ## Version constraints
@@ -124,6 +127,9 @@ unit tests covering the paths that use them.
 - `hole==0.9.2` requires Python ≥ 3.13 → HA ≥ **2025.10** (whose own floor is
   Python ≥ 3.13.2; `pyproject.toml` mirrors that).
 - `hacs.json`: `"homeassistant": "2025.10.0"`.
+- HA floor stays **2025.10**: the options flow only relies on the
+  `config_entry` property, which resolves via `flow.handler` on every supported
+  version — the deprecated setter (removed in 2025.12) is not used.
 - `manifest.json`: `"requirements": ["hole==0.9.2"]`,
   `"iot_class": "local_polling"`, `"integration_type": "device"`.
 - Tooling: uv with a universal lockfile — CI synced with Python 3.13, local

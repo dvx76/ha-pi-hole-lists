@@ -152,15 +152,14 @@ class PiHoleListsConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> PiHoleListsOptionsFlow:
         """Get the options flow for this handler."""
-        return PiHoleListsOptionsFlow(config_entry)
+        # The entry is resolved via the OptionsFlow.config_entry property
+        # (its setter was removed in HA 2025.12), so it must not be stored
+        # on the flow at construction time.
+        return PiHoleListsOptionsFlow()
 
 
 class PiHoleListsOptionsFlow(OptionsFlow):
     """Handle options for Pi-hole Lists."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: Mapping[str, Any] | None = None
