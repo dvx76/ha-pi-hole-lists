@@ -119,7 +119,13 @@ unit tests covering the paths that use them.
   lists (`github.com`, `raw.githubusercontent.com`) are named `owner/repo`,
   everything else `host + last path segment`.
 - Entities are added/removed on every poll from coordinator data (lists created or
-  deleted in the Pi-hole UI appear/disappear accordingly).
+  deleted in the Pi-hole UI appear/disappear accordingly). The platform's
+  `async_add_entities` callback is called directly from the listener — it is a
+  plain function returning `None` that schedules the add internally
+  (HA ≥ 2025.10), so wrapping it in `hass.async_create_task` raises
+  `TypeError: a coroutine was expected, got None`. Removals are scheduled via
+  `hass.async_create_task(entity.async_remove(force_remove=True))` because
+  `async_remove` is a coroutine.
 
 ### Config flow
 

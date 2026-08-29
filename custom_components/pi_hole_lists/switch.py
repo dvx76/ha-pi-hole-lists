@@ -30,9 +30,13 @@ async def async_setup_entry(
         for list_id in current_ids - set(entities):
             entity = PiHoleListSwitch(coordinator, entry, list_id)
             entities[list_id] = entity
-            hass.async_create_task(async_add_entities([entity]))
+            # The platform callback is a plain function that schedules the add
+            # internally and returns None — it must be called directly, not
+            # wrapped in hass.async_create_task (which needs a coroutine).
+            async_add_entities([entity])
         for list_id in set(entities) - current_ids:
             entity = entities.pop(list_id)
+            # async_remove is a coroutine, so it does need scheduling.
             hass.async_create_task(entity.async_remove(force_remove=True))
 
     entry.async_on_unload(coordinator.async_add_listener(_sync_lists))
