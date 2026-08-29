@@ -21,7 +21,7 @@ from .coordinator import PiHoleListsCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.BINARY_SENSOR]
 
 
 class PiHoleListsRuntimeData:
@@ -70,9 +70,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry; release the Pi-hole session."""
+    """Unload a config entry; stop gravity work and release the Pi-hole session."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
+
+    coordinator: PiHoleListsCoordinator = entry.runtime_data.coordinator
+    # Cancel any in-flight debounced gravity run before the session is torn
+    # down; the server-side pihole -g fork finishes on its own.
+    await coordinator.cancel_pending_gravity()
 
     api: PiHoleV6Lists = entry.runtime_data.api
     try:

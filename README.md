@@ -10,6 +10,25 @@ made in the Pi-hole UI appear in HA within one poll interval (default 5 min).
 - One config entry per Pi-hole instance — multiple Pi-holes supported
 - No per-group control: a switch toggles the list's `enabled` flag globally
   (group membership is exposed as an entity attribute)
+- Enabling a list automatically schedules a (debounced) gravity rebuild, so
+  the enable actually takes effect — see [Gravity updates](#gravity-updates)
+
+## Gravity updates
+
+Pi-hole v6 does **not** rebuild its gravity table when a list is enabled: a
+list turned on since the last gravity run contributes zero blocked domains
+until `pihole -g` runs, even though the list shows as enabled. This
+integration therefore schedules a debounced gravity rebuild every time you
+**enable** a list. Disabling is instant (Pi-hole's view filter drops the list)
+and triggers nothing.
+
+Blocking becomes effective when the rebuild finishes — usually seconds to a
+few minutes, depending on the size of your lists. A device-level **Gravity
+update** binary sensor shows the progress: **on** while a rebuild is pending
+or running, off otherwise, with a `status` attribute of
+`idle|pending|running|failed`. A burst of enable toggles is coalesced into a
+single run (plus at most one trailing rerun); a failed rebuild leaves the
+sensor at `failed` and logs a warning.
 
 ## Installation
 
@@ -63,6 +82,11 @@ Before tagging `vX.Y.Z`:
      Pi-hole UI (regression guard for the comment-echo on toggle).
    - Edit a list in the Pi-hole UI → HA reflects it within one poll interval.
    - Create and delete a list in the Pi-hole UI → entities appear/disappear.
+   - Gravity verification: enable a list whose domains are stale in gravity →
+     the **Gravity update** sensor goes on (`pending` → `running`) then off
+     (`idle`), and `pihole -q <domain-from-list>` / `dig @pi.hole` confirm
+     blocking became effective. Toggle 2+ lists quickly → exactly one gravity
+     run in FTL.log.
 3. Bump `version` in `manifest.json`, commit, tag `vX.Y.Z` on main.
 
 ## Gotchas
@@ -75,5 +99,17 @@ Before tagging `vX.Y.Z`:
   with it the entity's name).
 - Re-adding the integration creates new entities (unique IDs are entry-scoped).
 - Editing a list's URL in Pi-hole keeps its ID, so the HA entity follows it.
+- Enabling a list schedules a debounced gravity rebuild — blocking becomes
+  effective when the rebuild finishes (usually seconds to a few minutes), not
+  at the moment the switch flips. A failed rebuild leaves the Gravity update
+  sensor at `failed` and logs a warning; the next manual toggle schedules a
+  fresh run.
+- Every gravity rebuild briefly swaps the gravity database, and FTL logs
+  transient `ERROR: SQLite3: no such table: main.gravity/antigravity` lines
+  for queries arriving in that sub-second window (see
+  [pi-hole/pi-hole#6241](https://github.com/pi-hole/pi-hole/issues/6241)).
+  Expected Pi-hole v6 behavior, also on the weekly cron: the queries are
+  answered normally (unfiltered), and blocking resumes the moment FTL logs
+  "Gravity database has been updated, reloading now".
 
 Design and development details: [DESIGN.md](DESIGN.md). License: MIT.

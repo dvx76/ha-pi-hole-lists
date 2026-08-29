@@ -94,3 +94,10 @@ class PiHoleListSwitch(PiHoleListsEntity, SwitchEntity):
         self.coordinator.data[self._list_id] = list_data.merge_update(updated)
         self.async_write_ha_state()
         await self.coordinator.async_refresh()
+        if enabled:
+            # Pi-hole v6 does not rebuild gravity on a toggle: a list enabled
+            # since the last gravity run contributes no rows to the gravity
+            # table until a rebuild, so enabling is not effective until one
+            # runs. Schedule a (debounced) rebuild; disabling is instant via
+            # the view filter and needs nothing.
+            self.coordinator.schedule_gravity_update()

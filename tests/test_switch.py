@@ -42,6 +42,7 @@ def _coordinator(data: dict[int, PiHoleList]) -> MagicMock:
     coordinator.api = MagicMock()
     coordinator.api.set_list_enabled = AsyncMock()
     coordinator.async_refresh = AsyncMock()
+    coordinator.schedule_gravity_update = MagicMock()
     return coordinator
 
 
@@ -180,7 +181,12 @@ def test_device_info_per_entry():
 
 @pytest.mark.asyncio
 async def test_turn_on_enables_list():
-    """turn_on PUTs the model with enabled=true, adopts the response, refreshes."""
+    """turn_on PUTs the model with enabled=true, adopts the response, refreshes.
+
+    Enabling also schedules a debounced gravity rebuild: Pi-hole v6 does not
+    rebuild gravity on a toggle, so the list's domains would otherwise stay
+    absent from gravity until a manual ``pihole -g``.
+    """
     current = _list(enabled=False)
     coordinator = _coordinator({LIST_ID: current})
     entity = _entity(coordinator)
@@ -194,11 +200,16 @@ async def test_turn_on_enables_list():
     assert entity.is_on is True
     entity.async_write_ha_state.assert_called_once()
     coordinator.async_refresh.assert_awaited_once()
+    coordinator.schedule_gravity_update.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_turn_off_disables_list():
-    """turn_off PUTs the model with enabled=false, adopts the response, refreshes."""
+    """turn_off PUTs the model with enabled=false, adopts the response, refreshes.
+
+    Disabling is instant in Pi-hole (the gravity view filter drops the list),
+    so turn_off must not schedule a gravity rebuild.
+    """
     current = _list()
     coordinator = _coordinator({LIST_ID: current})
     entity = _entity(coordinator)
@@ -212,6 +223,7 @@ async def test_turn_off_disables_list():
     assert entity.is_on is False
     entity.async_write_ha_state.assert_called_once()
     coordinator.async_refresh.assert_awaited_once()
+    coordinator.schedule_gravity_update.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -233,6 +245,7 @@ async def test_turn_on_merges_slim_response_into_current_data():
     # Without "enabled" in the response, the old value is kept until the
     # coordinator refresh re-syncs the row.
     assert data.enabled is BLOCK_LIST["enabled"]
+    coordinator.schedule_gravity_update.assert_called_once()
 
 
 @pytest.mark.asyncio

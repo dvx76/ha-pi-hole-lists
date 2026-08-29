@@ -6,6 +6,7 @@ retry, and the session-validity re-authentication.
 """
 
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import unquote
 
 import aiohttp
@@ -26,10 +27,12 @@ PASSWORD = "super-secret-app-password"
 
 AUTH_URL = f"{URL}/api/auth"
 LISTS_URL = f"{URL}/api/lists"
+GRAVITY_URL = f"{URL}/api/action/gravity"
 ADDRESS = "https://example.com/ads.txt"
 
 AUTH_ENDPOINT = "/api/auth"
 LIST_ENDPOINT = "/api/lists"
+GRAVITY_ENDPOINT = "/api/action/gravity"
 
 BLOCK_LIST = {
     "id": 1,
@@ -399,6 +402,177 @@ async def test_set_list_enabled_wraps_connection_errors():
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             with pytest.raises(HoleConnectionError):
                 await api.set_list_enabled(_list_model(), True)
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_posts_action_endpoint():
+    """run_gravity POSTs /api/action/gravity with SID and CSRF headers."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.post(
+            GRAVITY_URL,
+            status=200,
+            body="[✓] Done.",
+            content_type="text/plain",
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            assert await api.run_gravity() is True
+
+        calls = _request_calls(mocked, "POST", GRAVITY_ENDPOINT)
+        assert len(calls) == 1
+        assert calls[0].kwargs["headers"]["X-FTL-SID"] == "sid-123"
+        assert calls[0].kwargs["headers"]["X-FTL-CSRF"] == "csrf-456"
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_strips_ansi_escapes():
+    """ANSI escapes in the streamed output do not hide the success markers."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.post(
+            GRAVITY_URL,
+            status=200,
+            body=(
+                "\x1b[33m[i]\x1b[0m Updating gravity database\n\x1b[32m[✓]\x1b[0m Done."
+            ),
+            content_type="text/plain",
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            assert await api.run_gravity() is True
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_detects_failure_markers():
+    """A [✗] marker in the output surfaces as a failed run (False)."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.post(
+            GRAVITY_URL,
+            status=200,
+            body="[✓] Gravity database updated\n[✗] Failed to parse adlist",
+            content_type="text/plain",
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            assert await api.run_gravity() is False
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_uses_dedicated_session():
+    """The gravity POST runs on a one-shot session that is fully closed.
+
+    FTL appends a second JSON response after the chunked terminator of the
+    gravity stream. aiohttp releases the connection back to the pool the
+    moment the payload reaches EOF (before the caller can close it), so a
+    POST on the shared session would leave a connection whose buffered
+    trailing bytes poison the next pooled request ("Bad status line" on the
+    following /api/lists fetch). Running the POST on a dedicated session
+    that is torn down afterwards contains the poisoned connection.
+    """
+    response = MagicMock()
+    response.status = 200
+    response.text = AsyncMock(return_value="[✓] Done.")
+    response.close = MagicMock()
+    gravity_session = MagicMock()
+    gravity_session.post = AsyncMock(return_value=response)
+    gravity_session.close = AsyncMock()
+
+    class _FakeClientSession:
+        """Stand-in for the one-shot session created inside run_gravity."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            assert not args and not kwargs, "unexpected constructor arguments"
+
+        async def __aenter__(self) -> MagicMock:
+            return gravity_session
+
+        async def __aexit__(self, *exc: object) -> bool:
+            await gravity_session.close()
+            return False
+
+    api = PiHoleV6Lists(URL, PASSWORD, session=MagicMock())
+    # Skip ensure_auth's re-authentication: a valid session is in place.
+    api._session_id = "sid-123"
+    api._csrf_token = "csrf-456"
+    api._session_validity = time.time() + 300
+
+    with patch.object(aiohttp, "ClientSession", _FakeClientSession):
+        assert await api.run_gravity() is True
+
+    gravity_session.post.assert_awaited_once()
+    response.text.assert_awaited_once()
+    response.close.assert_called_once()
+    gravity_session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_reauth_once_on_401():
+    """A 401 on the gravity POST triggers exactly one re-auth and one retry."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload(), repeat=True)
+        mocked.delete(AUTH_URL, status=200)
+        mocked.post(GRAVITY_URL, status=401)
+        mocked.post(
+            GRAVITY_URL,
+            status=200,
+            body="[✓] Done.",
+            content_type="text/plain",
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            assert await api.run_gravity() is True
+
+        assert len(_request_calls(mocked, "POST", GRAVITY_ENDPOINT)) == 2
+        assert len(_request_calls(mocked, "POST", AUTH_ENDPOINT)) == 2
+        assert len(_request_calls(mocked, "DELETE", AUTH_ENDPOINT)) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_raises_on_401_after_retry():
+    """Persistent 401 on the gravity POST surfaces as HoleAuthenticationError."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload(), repeat=True)
+        mocked.delete(AUTH_URL, status=200)
+        mocked.post(GRAVITY_URL, status=401, repeat=True)
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            with pytest.raises(HoleAuthenticationError):
+                await api.run_gravity()
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_raises_on_non_200():
+    """A non-200 gravity response surfaces as HoleError with its status."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.post(
+            GRAVITY_URL,
+            status=500,
+            payload={"error": {"message": "Internal error"}},
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            with pytest.raises(HoleError) as exc_info:
+                await api.run_gravity()
+
+        assert exc_info.value.status == 500
+
+
+@pytest.mark.asyncio
+async def test_run_gravity_wraps_connection_errors():
+    """Network errors during the gravity POST surface as HoleConnectionError."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.post(
+            GRAVITY_URL,
+            exception=aiohttp.ClientConnectionError("connection reset"),
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            with pytest.raises(HoleConnectionError):
+                await api.run_gravity()
 
 
 @pytest.mark.asyncio

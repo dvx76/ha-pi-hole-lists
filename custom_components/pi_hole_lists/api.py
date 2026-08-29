@@ -11,6 +11,8 @@ v6 list endpoints used by this integration:
   which always echoes the comment because FTL's PUT is a full-row upsert
   that resets absent fields (see ``set_list_enabled``); the updated row is
   parsed back into a ``PiHoleList``
+- ``POST /api/action/gravity`` — triggers ``pihole -g``; FTL live-streams
+  the CLI output as plain text until the run exits (see ``run_gravity``)
 
 The subclass relies on ``HoleV6`` private internals (``_fetch_data``,
 ``_session_id``, ``_csrf_token``, ``ensure_auth``); ``hole==0.9.2`` is pinned
@@ -19,6 +21,7 @@ exactly and every path that uses them is covered by unit tests (see DESIGN.md).
 
 import asyncio
 import logging
+import re
 import socket
 from urllib.parse import quote, urlparse
 
@@ -31,6 +34,7 @@ from hole.exceptions import (
     HoleResponseError,
 )
 
+from .const import GRAVITY_TIMEOUT
 from .models import PiHoleList
 
 _LOGGER = logging.getLogger(__name__)
@@ -170,3 +174,98 @@ class PiHoleV6Lists(HoleV6):
             raise HoleConnectionError(
                 f"Cannot update list {list_obj.address}: {err}"
             ) from err
+
+    async def run_gravity(self) -> bool:
+        """Trigger a gravity rebuild (``pihole -g``) and wait for it to finish.
+
+        Returns ``True`` when the run completed cleanly, ``False`` when the
+        streamed output reported failures (``[✗]`` markers).
+
+        FTL forks ``pihole -g`` server-side and live-streams its CLI output
+        over one long-lived chunked response: the ``200 text/plain`` headers
+        are sent *before* gravity completes, chunks stream until the run
+        exits, then a chunked terminator is followed by a second JSON
+        response that client-side parsers (aiohttp) never expose. The body is
+        therefore plain text, never JSON — it is read only to detect failure
+        markers, completion of the read == completion of gravity.
+
+        The trailing second response makes the connection unfit for reuse:
+        its bytes sit in the buffer past the chunked terminator and the next
+        request on that connection would parse them as its response head
+        ("Bad status line" on the following ``/api/lists`` poll — observed on
+        a real instance). The connection cannot be salvaged client-side:
+        aiohttp releases it back to the pool the moment the payload reaches
+        EOF (``ClientResponse._response_eof``), before this method regains
+        control. The POST therefore runs on a **dedicated one-shot session**
+        that is closed entirely when the read completes — the shared session
+        never sees the stream, so no poisoned connection can be reused by a
+        later request.
+
+        Requires auth (SID + CSRF headers, mirror of the PUT path); a 401
+        re-authenticates once and retries. Not gated by the
+        ``allow_destructive`` webserver setting, but the client's short poll
+        timeout must not apply: gravity can take minutes, so the dedicated
+        ``GRAVITY_TIMEOUT`` caps the wait.
+        """
+        await self.ensure_auth()
+        url = f"{self.base_url}/api/action/gravity"
+        headers = {"X-FTL-SID": self._session_id}
+        if self._csrf_token:
+            headers["X-FTL-CSRF"] = self._csrf_token
+
+        try:
+            async with aiohttp.ClientSession() as gravity_session:
+                async with asyncio.timeout(GRAVITY_TIMEOUT):
+                    response = await gravity_session.post(
+                        url, headers=headers, ssl=self.verify_tls
+                    )
+
+                    # The session may have expired between polls:
+                    # re-authenticate once and retry, mirroring
+                    # set_list_enabled.
+                    if response.status == 401:
+                        _LOGGER.info("Session expired, re-authenticating")
+                        await self.authenticate()
+                        if self._session_id:
+                            headers["X-FTL-SID"] = self._session_id
+                            if self._csrf_token:
+                                headers["X-FTL-CSRF"] = self._csrf_token
+                        response = await gravity_session.post(
+                            url, headers=headers, ssl=self.verify_tls
+                        )
+
+                        # Still unauthorized after a retry means the
+                        # credentials themselves are rejected, not just the
+                        # session.
+                        if response.status == 401:
+                            raise HoleAuthenticationError(
+                                "Authentication required", status=401
+                            )
+
+                    if response.status != 200:
+                        raise HoleError(
+                            f"Failed to run gravity: {response.status}",
+                            status=response.status,
+                        )
+
+                    # FTL streams the pihole -g console output; HTTP 200
+                    # arrives before the run completes, so awaiting the full
+                    # text is what waits for gravity to finish.
+                    try:
+                        body = await response.text()
+                    finally:
+                        response.close()
+
+        except (asyncio.TimeoutError, aiohttp.ClientError, socket.gaierror) as err:
+            raise HoleConnectionError(f"Cannot run gravity: {err}") from err
+
+        # The status is 200 for both successful and failed runs once FTL has
+        # forked pihole -g; failures surface as [✗] markers in the output,
+        # which may carry ANSI escapes depending on the FTL version.
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", body)
+        if "[✗]" in plain:
+            _LOGGER.warning(
+                "Gravity rebuild reported failures (output tail): %s", plain[-500:]
+            )
+            return False
+        return True
