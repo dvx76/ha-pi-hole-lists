@@ -10,16 +10,17 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import PiHoleV6Lists
 from .const import LIST_TYPE_BLOCK
+from .models import PiHoleList
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, dict]]):
+class PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, PiHoleList]]):
     """Poll the Pi-hole lists and index them by list id.
 
-    The data is a mapping of list id to the full Pi-hole list object, limited
-    to block lists (``type=block``). Lists created or deleted in the Pi-hole
-    UI appear/disappear on the next poll.
+    The data is a mapping of list id to the parsed ``PiHoleList`` model,
+    limited to block lists (``type=block``). Lists created or deleted in the
+    Pi-hole UI appear/disappear on the next poll.
     """
 
     def __init__(
@@ -39,7 +40,7 @@ class PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, dict]]):
         )
         self.api = api
 
-    async def _async_update_data(self) -> dict[int, dict]:
+    async def _async_update_data(self) -> dict[int, PiHoleList]:
         """Fetch the lists, returning only block lists keyed by list id."""
         try:
             lists = await self.api.get_lists()
@@ -54,4 +55,4 @@ class PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, dict]]):
                 f"Unexpected error fetching Pi-hole lists: {err}"
             ) from err
 
-        return {lst["id"]: lst for lst in lists if lst.get("type") == LIST_TYPE_BLOCK}
+        return {lst.id: lst for lst in lists if lst.type == LIST_TYPE_BLOCK}

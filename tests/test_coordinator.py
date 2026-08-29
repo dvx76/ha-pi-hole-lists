@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.pi_hole_lists.coordinator import PiHoleListsCoordinator
+from custom_components.pi_hole_lists.models import PiHoleList
 
 
 def _coordinator(api: MagicMock) -> PiHoleListsCoordinator:
@@ -21,7 +22,7 @@ def _coordinator(api: MagicMock) -> PiHoleListsCoordinator:
     )
 
 
-def _api(lists: list[dict]) -> MagicMock:
+def _api(lists: list[PiHoleList]) -> MagicMock:
     """Build an API mock returning the given lists."""
     api = MagicMock()
     api.get_lists = AsyncMock(return_value=lists)
@@ -31,22 +32,16 @@ def _api(lists: list[dict]) -> MagicMock:
 @pytest.mark.asyncio
 async def test_update_filters_block_lists():
     """Only type=block lists are kept, keyed by list id."""
-    coordinator = _coordinator(
-        _api(
-            [
-                {"id": 1, "type": "block", "enabled": True},
-                {"id": 2, "type": "allow", "enabled": True},
-                {"id": 3, "type": "block", "enabled": False},
-            ]
-        )
-    )
+    lists = [
+        PiHoleList(id=1, type="block", enabled=True),
+        PiHoleList(id=2, type="allow", enabled=True),
+        PiHoleList(id=3, type="block", enabled=False),
+    ]
+    coordinator = _coordinator(_api(lists))
 
     data = await coordinator._async_update_data()
 
-    assert data == {
-        1: {"id": 1, "type": "block", "enabled": True},
-        3: {"id": 3, "type": "block", "enabled": False},
-    }
+    assert data == {1: lists[0], 3: lists[2]}
 
 
 @pytest.mark.asyncio

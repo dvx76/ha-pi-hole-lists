@@ -5,11 +5,12 @@ Subclasses the ``HoleV6`` client from the exactly-pinned ``hole`` package
 validity tracking, one-time 401 re-authentication) and adding the Pi-hole
 v6 list endpoints used by this integration:
 
-- ``GET /api/lists``
-- ``PUT /api/lists/{quote(address, safe="")}?type=block`` with body
-  ``{"enabled": bool, "comment": str}`` — the comment must be echoed because
-  FTL's PUT is a full-row upsert that resets absent fields (see
-  ``set_list_enabled``)
+- ``GET /api/lists`` — rows are parsed into ``PiHoleList`` values
+- ``PUT /api/lists/{quote(address, safe="")}?type=block`` — the body is built
+  by ``PiHoleList.update_payload`` (``{"enabled": bool, "comment": str}``),
+  which always echoes the comment because FTL's PUT is a full-row upsert
+  that resets absent fields (see ``set_list_enabled``); the updated row is
+  parsed back into a ``PiHoleList``
 
 The subclass relies on ``HoleV6`` private internals (``_fetch_data``,
 ``_session_id``, ``_csrf_token``, ``ensure_auth``); ``hole==0.9.2`` is pinned
@@ -29,6 +30,8 @@ from hole.exceptions import (
     HoleError,
     HoleResponseError,
 )
+
+from .models import PiHoleList
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,41 +67,44 @@ class PiHoleV6Lists(HoleV6):
             timeout=timeout,
         )
 
-    async def get_lists(self) -> list[dict]:
+    async def get_lists(self) -> list[PiHoleList]:
         """Fetch all lists (block and allow) from Pi-hole."""
         response = await self._fetch_data("/lists")
-        return response["lists"]
+        return [PiHoleList.from_dict(row) for row in response["lists"]]
 
     async def set_list_enabled(
         self,
-        address: str,
-        list_type: str,
+        list_obj: PiHoleList,
         enabled: bool,
-        *,
-        comment: str | None = None,
-    ) -> dict:
+    ) -> PiHoleList:
         """Enable or disable a list and return its updated state.
 
         FTL's PUT is a full-row upsert (``INSERT ... ON CONFLICT(address,type)
         DO UPDATE SET enabled, comment, type``), not a merge: any mutable
         field missing from the payload is reset to its default — ``comment``
-        to NULL, ``enabled`` to true. The current comment must therefore be
-        echoed back in the payload, otherwise toggling the switch silently
-        wipes the list's comment in Pi-hole. Type is carried by the query
-        parameter and groups are only touched when the payload contains a
-        ``groups`` array (which we intentionally never send).
+        to NULL, ``enabled`` to true. ``PiHoleList.update_payload`` is the
+        single source of the payload shape and always echoes the list's
+        comment, otherwise toggling the switch silently wipes the list's
+        comment in Pi-hole. Type is carried by the query parameter and groups
+        are only touched when the payload contains a ``groups`` array (which
+        we intentionally never send).
         """
+        # The write path needs the full row: address and type are
+        # URL/query parameters, so a model without them cannot be toggled.
+        if not list_obj.address or not list_obj.type:
+            raise HoleError(f"List {list_obj.id} is missing its address or type")
         await self.ensure_auth()
 
         # Pi-hole matches the list by its URL-encoded address; the query
         # parameter disambiguates the list type.
-        url = f"{self.base_url}/api/lists/{quote(address, safe='')}?type={list_type}"
+        url = (
+            f"{self.base_url}/api/lists/{quote(list_obj.address, safe='')}"
+            f"?type={list_obj.type}"
+        )
         headers = {"X-FTL-SID": self._session_id}
         if self._csrf_token:
             headers["X-FTL-CSRF"] = self._csrf_token
-        payload = {"enabled": enabled}
-        if comment is not None:
-            payload["comment"] = comment
+        payload = list_obj.update_payload(enabled)
 
         try:
             async with asyncio.timeout(self.timeout):
@@ -128,7 +134,7 @@ class PiHoleV6Lists(HoleV6):
 
                 if response.status != 200:
                     raise HoleError(
-                        f"Failed to update list {address}: {response.status}",
+                        f"Failed to update list {list_obj.address}: {response.status}",
                         status=response.status,
                     )
 
@@ -136,18 +142,31 @@ class PiHoleV6Lists(HoleV6):
                     response_data = await response.json()
                 except (aiohttp.ContentTypeError, ValueError) as err:
                     raise HoleResponseError(
-                        f"Invalid response updating list {address}"
+                        f"Invalid response updating list {list_obj.address}"
                     ) from err
 
                 # FTL answers a single-item update with the full list wrapped
                 # in {"lists": [...]} (plus a "processed" summary). Fall back
-                # to returning the body as-is for older response shapes.
-                if "lists" in response_data:
-                    lists = response_data["lists"]
-                    if not lists:
-                        raise HoleResponseError(f"No list returned for {address}")
-                    return lists[0]
-                return response_data
+                # to parsing the bare body for older response shapes. Parse
+                # failures are loud: a malformed response is a HoleResponseError
+                # rather than a silently untyped row.
+                try:
+                    if "lists" in response_data:
+                        lists = response_data["lists"]
+                        if not lists:
+                            raise HoleResponseError(
+                                f"No list returned for {list_obj.address}"
+                            )
+                        updated_list = PiHoleList.from_dict(lists[0])
+                    else:
+                        updated_list = PiHoleList.from_dict(response_data)
+                except (ValueError, TypeError) as err:
+                    raise HoleResponseError(
+                        f"Invalid response updating list {list_obj.address}"
+                    ) from err
+                return updated_list
 
         except (asyncio.TimeoutError, aiohttp.ClientError, socket.gaierror) as err:
-            raise HoleConnectionError(f"Cannot update list {address}: {err}") from err
+            raise HoleConnectionError(
+                f"Cannot update list {list_obj.address}: {err}"
+            ) from err

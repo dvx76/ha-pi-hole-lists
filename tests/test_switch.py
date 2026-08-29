@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.pi_hole_lists.models import PiHoleList
 from custom_components.pi_hole_lists.switch import PiHoleListSwitch
 
 LIST_ID = 1
@@ -25,7 +26,12 @@ BLOCK_LIST = {
 }
 
 
-def _coordinator(data: dict[int, dict]) -> MagicMock:
+def _list(**overrides: object) -> PiHoleList:
+    """Build the block-list model, optionally overriding fields."""
+    return PiHoleList.from_dict({**BLOCK_LIST, **overrides})
+
+
+def _coordinator(data: dict[int, PiHoleList]) -> MagicMock:
     """Build a coordinator mock carrying the given list data."""
     coordinator = MagicMock()
     coordinator.data = data
@@ -54,18 +60,19 @@ def _entity(coordinator: MagicMock, entry: MagicMock | None = None) -> PiHoleLis
 
 def test_is_on_maps_list_enabled():
     """is_on mirrors the list's global enabled flag."""
-    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "enabled": False}})
+    coordinator = _coordinator({LIST_ID: _list(enabled=False)})
     entity = _entity(coordinator)
 
     assert entity.is_on is False
 
-    coordinator.data[LIST_ID]["enabled"] = True
+    # Models are frozen, so the coordinator data is replaced, not mutated.
+    coordinator.data[LIST_ID] = _list(enabled=True)
     assert entity.is_on is True
 
 
 def test_unique_id_and_state_attributes():
     """The unique id is entry-scoped and the attrs expose the list details."""
-    entity = _entity(_coordinator({LIST_ID: BLOCK_LIST}))
+    entity = _entity(_coordinator({LIST_ID: _list()}))
 
     assert entity.unique_id == f"{ENTRY_ID}-{LIST_ID}"
 
@@ -83,39 +90,41 @@ def test_unique_id_and_state_attributes():
 
 def test_name_uses_comment():
     """The entity name is the list comment when set."""
-    entity = _entity(_coordinator({LIST_ID: BLOCK_LIST}))
+    entity = _entity(_coordinator({LIST_ID: _list()}))
     assert entity.name == "Example blocklist"
 
 
 def test_name_falls_back_to_humanized_address():
     """Without a comment the name comes from the list URL."""
-    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": ""}})
+    coordinator = _coordinator({LIST_ID: _list(comment="")})
     entity = _entity(coordinator)
     assert entity.name == "example.com/ads.txt"
 
-    coordinator.data[LIST_ID]["address"] = "http://pi.hole"
+    coordinator.data[LIST_ID] = _list(address="http://pi.hole", comment="")
     assert entity.name == "pi.hole"
 
 
 def test_name_falls_back_to_github_owner_repo():
     """GitHub-hosted lists without a comment are named owner/repo."""
-    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": ""}})
+    coordinator = _coordinator({LIST_ID: _list(comment="")})
     entity = _entity(coordinator)
 
-    coordinator.data[LIST_ID]["address"] = (
-        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    coordinator.data[LIST_ID] = _list(
+        address="https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+        comment="",
     )
     assert entity.name == "StevenBlack/hosts"
 
-    coordinator.data[LIST_ID]["address"] = (
-        "https://github.com/danhorton7/pihole-block-tiktok"
+    coordinator.data[LIST_ID] = _list(
+        address="https://github.com/danhorton7/pihole-block-tiktok",
+        comment="",
     )
     assert entity.name == "danhorton7/pihole-block-tiktok"
 
 
 def test_device_info_per_entry():
     """One device per config entry, named after the Pi-hole host."""
-    entity = _entity(_coordinator({LIST_ID: BLOCK_LIST}))
+    entity = _entity(_coordinator({LIST_ID: _list()}))
     info = entity.device_info
 
     assert info["identifiers"] == {("pi_hole_lists", ENTRY_ID)}
@@ -124,17 +133,16 @@ def test_device_info_per_entry():
 
 @pytest.mark.asyncio
 async def test_turn_on_enables_list():
-    """turn_on PUTs enabled=true, adopts the response, and refreshes."""
-    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "enabled": False}})
+    """turn_on PUTs the model with enabled=true, adopts the response, refreshes."""
+    current = _list(enabled=False)
+    coordinator = _coordinator({LIST_ID: current})
     entity = _entity(coordinator)
-    updated = {**BLOCK_LIST, "enabled": True}
+    updated = _list(enabled=True)
     coordinator.api.set_list_enabled.return_value = updated
 
     await entity.async_turn_on()
 
-    coordinator.api.set_list_enabled.assert_awaited_once_with(
-        BLOCK_LIST["address"], "block", True, comment="Example blocklist"
-    )
+    coordinator.api.set_list_enabled.assert_awaited_once_with(current, True)
     assert coordinator.data[LIST_ID] == updated
     assert entity.is_on is True
     entity.async_write_ha_state.assert_called_once()
@@ -143,17 +151,16 @@ async def test_turn_on_enables_list():
 
 @pytest.mark.asyncio
 async def test_turn_off_disables_list():
-    """turn_off PUTs enabled=false, adopts the response, and refreshes."""
-    coordinator = _coordinator({LIST_ID: BLOCK_LIST})
+    """turn_off PUTs the model with enabled=false, adopts the response, refreshes."""
+    current = _list()
+    coordinator = _coordinator({LIST_ID: current})
     entity = _entity(coordinator)
-    updated = {**BLOCK_LIST, "enabled": False}
+    updated = _list(enabled=False)
     coordinator.api.set_list_enabled.return_value = updated
 
     await entity.async_turn_off()
 
-    coordinator.api.set_list_enabled.assert_awaited_once_with(
-        BLOCK_LIST["address"], "block", False, comment="Example blocklist"
-    )
+    coordinator.api.set_list_enabled.assert_awaited_once_with(current, False)
     assert coordinator.data[LIST_ID] == updated
     assert entity.is_on is False
     entity.async_write_ha_state.assert_called_once()
@@ -161,41 +168,21 @@ async def test_turn_off_disables_list():
 
 
 @pytest.mark.asyncio
-async def test_turn_on_passes_none_comment_when_list_has_none():
-    """A list without a comment is toggled with comment=None.
-
-    FTL's PUT resets a missing comment to NULL, which is a no-op for a list
-    that already has none — but the comment must never be *dropped* for a
-    list that has one (see test_turn_on_enables_list).
-    """
-    coordinator = _coordinator({LIST_ID: {**BLOCK_LIST, "comment": None}})
-    entity = _entity(coordinator)
-    coordinator.api.set_list_enabled.return_value = {**BLOCK_LIST, "comment": None}
-
-    await entity.async_turn_on()
-
-    coordinator.api.set_list_enabled.assert_awaited_once_with(
-        BLOCK_LIST["address"], "block", True, comment=None
-    )
-
-
-@pytest.mark.asyncio
 async def test_turn_on_merges_slim_response_into_current_data():
     """A slim response must not wipe details of the current list data."""
-    coordinator = _coordinator({LIST_ID: BLOCK_LIST})
+    coordinator = _coordinator({LIST_ID: _list()})
     entity = _entity(coordinator)
     # Real FTL responses carry the full row, but stay safe if they do not.
-    coordinator.api.set_list_enabled.return_value = {
-        "id": LIST_ID,
-        "status": "enabled",
-    }
+    coordinator.api.set_list_enabled.return_value = PiHoleList.from_dict(
+        {"id": LIST_ID, "status": "enabled"}
+    )
 
     await entity.async_turn_on()
 
     data = coordinator.data[LIST_ID]
-    assert data["address"] == BLOCK_LIST["address"]
-    assert data["comment"] == BLOCK_LIST["comment"]
-    assert data["status"] == "enabled"
+    assert data.address == BLOCK_LIST["address"]
+    assert data.comment == BLOCK_LIST["comment"]
+    assert data.status == "enabled"
     # Without "enabled" in the response, the old value is kept until the
     # coordinator refresh re-syncs the row.
-    assert data["enabled"] is BLOCK_LIST["enabled"]
+    assert data.enabled is BLOCK_LIST["enabled"]

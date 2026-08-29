@@ -19,6 +19,7 @@ from hole.exceptions import (
 )
 
 from custom_components.pi_hole_lists.api import PiHoleV6Lists
+from custom_components.pi_hole_lists.models import PiHoleList
 
 URL = "http://pi.hole:8081"
 PASSWORD = "super-secret-app-password"
@@ -51,6 +52,11 @@ ALLOW_LIST = {
     "type": "allow",
     "comment": "Example allowlist",
 }
+
+
+def _list_model(**overrides: object) -> PiHoleList:
+    """Build the block-list model, optionally overriding fields."""
+    return PiHoleList.from_dict({**BLOCK_LIST, **overrides})
 
 
 def _session_payload(sid: str = "sid-123", csrf: str = "csrf-456") -> dict:
@@ -149,7 +155,10 @@ async def test_get_lists_parses_lists():
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             lists = await api.get_lists()
 
-        assert lists == [BLOCK_LIST, ALLOW_LIST]
+        assert lists == [
+            PiHoleList.from_dict(BLOCK_LIST),
+            PiHoleList.from_dict(ALLOW_LIST),
+        ]
 
         assert len(_request_urls(mocked, "GET", LIST_ENDPOINT)) == 1
         assert (
@@ -173,7 +182,7 @@ async def test_get_lists_reauth_once_on_401():
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             lists = await api.get_lists()
 
-        assert lists == [BLOCK_LIST]
+        assert lists == [PiHoleList.from_dict(BLOCK_LIST)]
         assert len(_request_calls(mocked, "GET", LIST_ENDPOINT)) == 2
         assert len(_request_calls(mocked, "POST", AUTH_ENDPOINT)) == 2
         assert len(_request_calls(mocked, "DELETE", AUTH_ENDPOINT)) == 1
@@ -195,7 +204,7 @@ async def test_get_lists_reauth_when_session_expired():
             api._session_validity = time.time() - 1
             lists = await api.get_lists()
 
-        assert lists == [BLOCK_LIST]
+        assert lists == [PiHoleList.from_dict(BLOCK_LIST)]
         assert len(_request_calls(mocked, "POST", AUTH_ENDPOINT)) == 2
         assert len(_request_calls(mocked, "DELETE", AUTH_ENDPOINT)) == 1
 
@@ -213,11 +222,9 @@ async def test_set_list_enabled_sends_put():
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
-            result = await api.set_list_enabled(
-                ADDRESS, "block", False, comment="Example blocklist"
-            )
+            result = await api.set_list_enabled(_list_model(), False)
 
-        assert result == updated
+        assert result == PiHoleList.from_dict(updated)
 
         put_calls = _request_calls(mocked, "PUT", LIST_ENDPOINT)
         assert len(put_calls) == 1
@@ -244,9 +251,14 @@ async def test_set_list_enabled_sends_put():
 
 
 @pytest.mark.asyncio
-async def test_set_list_enabled_omits_comment_when_none():
-    """Without a known comment the payload keeps only the enabled flag."""
-    updated = {**BLOCK_LIST, "enabled": True}
+async def test_set_list_enabled_sends_null_comment_when_none():
+    """A list without a comment is toggled with a JSON null comment.
+
+    FTL treats JSON null and a missing key identically (both leave the
+    comment NULL), but ``update_payload`` always carries the key so the
+    payload shape stays uniform.
+    """
+    updated = {**BLOCK_LIST, "enabled": True, "comment": None}
     with aioresponses() as mocked:
         mocked.post(AUTH_URL, status=200, payload=_session_payload())
         mocked.put(
@@ -256,16 +268,16 @@ async def test_set_list_enabled_omits_comment_when_none():
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
-            result = await api.set_list_enabled(ADDRESS, "block", True)
+            result = await api.set_list_enabled(_list_model(comment=None), True)
 
-        assert result == updated
+        assert result == PiHoleList.from_dict(updated)
         call = _request_calls(mocked, "PUT", LIST_ENDPOINT)[0]
-        assert call.kwargs["json"] == {"enabled": True}
+        assert call.kwargs["json"] == {"enabled": True, "comment": None}
 
 
 @pytest.mark.asyncio
-async def test_set_list_enabled_passes_through_bare_list_response():
-    """A response without the "lists" wrapper is returned as-is."""
+async def test_set_list_enabled_parses_bare_list_response():
+    """A response without the "lists" wrapper is parsed as a bare row."""
     updated = {**BLOCK_LIST, "enabled": True}
     with aioresponses() as mocked:
         mocked.post(AUTH_URL, status=200, payload=_session_payload())
@@ -276,9 +288,9 @@ async def test_set_list_enabled_passes_through_bare_list_response():
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
-            result = await api.set_list_enabled(ADDRESS, "block", True)
+            result = await api.set_list_enabled(_list_model(), True)
 
-        assert result == updated
+        assert result == PiHoleList.from_dict(updated)
 
 
 @pytest.mark.asyncio
@@ -294,7 +306,23 @@ async def test_set_list_enabled_raises_on_empty_lists_wrapper():
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             with pytest.raises(HoleResponseError):
-                await api.set_list_enabled(ADDRESS, "block", True)
+                await api.set_list_enabled(_list_model(), True)
+
+
+@pytest.mark.asyncio
+async def test_set_list_enabled_raises_on_unparseable_response():
+    """A response that cannot be parsed surfaces as HoleResponseError."""
+    with aioresponses() as mocked:
+        mocked.post(AUTH_URL, status=200, payload=_session_payload())
+        mocked.put(
+            f"{URL}/api/lists/https%3A%2F%2Fexample.com%2Fads.txt?type=block",
+            status=200,
+            payload={"lists": [{"status": "enabled"}]},
+        )
+        async with aiohttp.ClientSession() as session:
+            api = PiHoleV6Lists(URL, PASSWORD, session=session)
+            with pytest.raises(HoleResponseError):
+                await api.set_list_enabled(_list_model(), True)
 
 
 @pytest.mark.asyncio
@@ -315,9 +343,9 @@ async def test_set_list_enabled_reauth_once_on_401():
         )
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
-            result = await api.set_list_enabled(ADDRESS, "block", True)
+            result = await api.set_list_enabled(_list_model(), True)
 
-        assert result == updated
+        assert result == PiHoleList.from_dict(updated)
         assert len(_request_calls(mocked, "PUT", LIST_ENDPOINT)) == 2
         assert len(_request_calls(mocked, "POST", AUTH_ENDPOINT)) == 2
         assert len(_request_calls(mocked, "DELETE", AUTH_ENDPOINT)) == 1
@@ -337,7 +365,7 @@ async def test_set_list_enabled_raises_on_401_after_retry():
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             with pytest.raises(HoleAuthenticationError):
-                await api.set_list_enabled(ADDRESS, "block", True)
+                await api.set_list_enabled(_list_model(), True)
 
 
 @pytest.mark.asyncio
@@ -353,7 +381,7 @@ async def test_set_list_enabled_raises_on_non_200():
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             with pytest.raises(HoleError) as exc_info:
-                await api.set_list_enabled(ADDRESS, "block", True)
+                await api.set_list_enabled(_list_model(), True)
 
         assert exc_info.value.status == 500
 
@@ -370,7 +398,7 @@ async def test_set_list_enabled_wraps_connection_errors():
         async with aiohttp.ClientSession() as session:
             api = PiHoleV6Lists(URL, PASSWORD, session=session)
             with pytest.raises(HoleConnectionError):
-                await api.set_list_enabled(ADDRESS, "block", True)
+                await api.set_list_enabled(_list_model(), True)
 
 
 @pytest.mark.asyncio

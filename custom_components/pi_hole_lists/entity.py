@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import PiHoleListsCoordinator
+from .models import PiHoleList
 
 # Attributes exposed on every list entity, copied from the Pi-hole list object.
 STATE_ATTRIBUTES = (
@@ -68,6 +69,6 @@ class PiHoleListsEntity(CoordinatorEntity[PiHoleListsCoordinator]):
         )
 
     @property
-    def list_data(self) -> dict:
+    def list_data(self) -> PiHoleList:
         """Return the latest Pi-hole data for this entity's list."""
         return self.coordinator.data[self._list_id]

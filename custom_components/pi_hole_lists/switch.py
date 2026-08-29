@@ -5,7 +5,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import LIST_TYPE_BLOCK
 from .coordinator import PiHoleListsCoordinator
 from .entity import STATE_ATTRIBUTES, PiHoleListsEntity, _humanize_address
 
@@ -56,21 +55,21 @@ class PiHoleListSwitch(PiHoleListsEntity, SwitchEntity):
     @property
     def is_on(self) -> bool:
         """Return whether the list is enabled in Pi-hole."""
-        return bool(self.list_data.get("enabled"))
+        return bool(self.list_data.enabled)
 
     @property
     def name(self) -> str:
         """Return the list comment, or a humanized address."""
         list_data = self.list_data
-        if comment := list_data.get("comment"):
+        if comment := list_data.comment:
             return comment
-        return _humanize_address(list_data["address"])
+        return _humanize_address(list_data.address)
 
     @property
     def extra_state_attributes(self) -> dict:
         """Return Pi-hole list details as state attributes."""
         list_data = self.list_data
-        return {key: list_data.get(key) for key in STATE_ATTRIBUTES}
+        return {key: getattr(list_data, key) for key in STATE_ATTRIBUTES}
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable the list in Pi-hole."""
@@ -83,20 +82,11 @@ class PiHoleListSwitch(PiHoleListsEntity, SwitchEntity):
     async def _async_set_enabled(self, enabled: bool) -> None:
         """Toggle the list, update state from the response, and refresh."""
         list_data = self.list_data
-        updated = await self.coordinator.api.set_list_enabled(
-            list_data["address"],
-            LIST_TYPE_BLOCK,
-            enabled,
-            # FTL's PUT replaces the whole row: without the comment the
-            # list's comment is wiped, which would rename this entity to
-            # its address fallback on the next poll.
-            comment=list_data.get("comment"),
-        )
+        # The PUT payload is built from the model (PiHoleList.update_payload)
+        # and always echoes the comment, so the toggle cannot wipe it.
+        updated = await self.coordinator.api.set_list_enabled(list_data, enabled)
         # Merge the response over the current list so no details are lost if
         # the response is slim; the coordinator refresh below re-syncs anyway.
-        self.coordinator.data[self._list_id] = {
-            **self.coordinator.data[self._list_id],
-            **updated,
-        }
+        self.coordinator.data[self._list_id] = list_data.merge_update(updated)
         self.async_write_ha_state()
         await self.coordinator.async_refresh()

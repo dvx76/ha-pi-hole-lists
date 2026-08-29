@@ -33,6 +33,7 @@ Home Assistant:
 | 5 | Sync | `DataUpdateCoordinator` poll, default 5 min, options-flow configurable; toggle awaits PUT and updates state from the response | Same cadence as core/pi_hole_v6; PUT is ~10 ms, no optimistic state needed |
 | 6 | Config flow | URL + app password + verify-SSL; reauth flow; multi-entry | App password is the recommended v6 credential |
 | 7 | Version pin | `hole==0.9.2` exact | Same version core pins; protects the subclass from private-API drift |
+| 8 | List model | `@dataclass(frozen=True) PiHoleList` (models.py); lenient `from_dict` (only `id` required, unknown FTL keys dropped), `update_payload` builds the PUT body, `merge_update` copies only non-`None` fields | Typed immutable rows end the stringly-typed dict flow; the write path can no longer forget the comment (it always echoes it); lenient parsing fits trusted FTL output (KISS — no pydantic-style validation) |
 
 ## Pi-hole v6 API surface used
 
@@ -66,33 +67,44 @@ All verified against Pi-hole 2025.07.x.
 ```
 config entry (one per Pi-hole)
 ├── PiHoleV6Lists(HoleV6)                    # api.py
-│     ├─ get_lists() -> list[dict]           #   GET /api/lists (inherited _fetch_data)
-│     └─ set_list_enabled() -> dict          #   PUT ...?type=block, 401 re-auth once
-├── PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, dict]])
-│     ├─ update: get_lists() -> {list_id: list} (type=block only)
+│     ├─ get_lists() -> list[PiHoleList]     #   GET /api/lists (inherited _fetch_data)
+│     └─ set_list_enabled(PiHoleList, bool)  #   PUT ...?type=block, 401 re-auth once
+│                                            #   -> PiHoleList (parsed response)
+├── PiHoleListsCoordinator(DataUpdateCoordinator[dict[int, PiHoleList]])
+│     ├─ update: get_lists() -> {list_id: PiHoleList} (type=block only)
 │     └─ scan_interval: 5 min default, 1–60 min via options flow
 └── SwitchEntity per list (CoordinatorEntity)
-      ├─ is_on = list["enabled"]
-      ├─ turn_on/off: await set_list_enabled(..., comment=list["comment"]);
-      │  merge response into data; refresh
+      ├─ is_on = list_data.enabled
+      ├─ turn_on/off: await set_list_enabled(list_data, enabled); merge the
+      │  response via PiHoleList.merge_update; refresh
       └─ attrs: id, address, type, groups, comment, number, invalid_domains,
          status, date_updated
 ```
+
+List rows are typed as the frozen `PiHoleList` model (`models.py`) instead of
+raw dicts: reads use attribute access, the PUT payload is built from the model
+by `update_payload` (the comment can no longer be forgotten at the call site),
+and the defensive toggle merge is `merge_update` (copies only non-`None`
+fields of the response, so a hypothetical slim response can never wipe
+details).
 
 ### `api.py` subclass notes
 
 `HoleV6` has no list endpoints and its `_fetch_data()` is GET-only, so the subclass:
 
-- `get_lists()`: `resp = await self._fetch_data("/lists")`; return `resp["lists"]`.
-- `set_list_enabled(address, list_type, enabled, comment=None)`: `await
+- `get_lists() -> list[PiHoleList]`: `resp = await self._fetch_data("/lists")`;
+  parse `resp["lists"]` via `PiHoleList.from_dict`.
+- `set_list_enabled(list_obj: PiHoleList, enabled: bool) -> PiHoleList`: `await
   self.ensure_auth()`, then `PUT {base_url}/api/lists/{quote(address, safe="")}
-  ?type={list_type}` with `json={"enabled": enabled, "comment": comment}`
-  (comment only when known) and sid/csrf headers; on 401 re-authenticate once
-  and retry (mirror `_fetch_data`); non-200 → `HoleError`; unwrap the
-  `{"lists": [...]}` response into the updated list dict (fall back to the body
-  as-is for other shapes). The comment must be echoed because FTL's PUT
-  replaces the row and resets a missing `comment` to NULL (regression:
-  toggling used to wipe the comment in Pi-hole, which renamed the HA entity).
+  ?type={list_obj.type}` with `json=list_obj.update_payload(enabled)` and
+  sid/csrf headers; on 401 re-authenticate once and retry (mirror
+  `_fetch_data`); non-200 → `HoleError`; unwrap the `{"lists": [...]}` response
+  (fall back to the body as-is for other shapes) and parse it via `from_dict`
+  (parse failures → `HoleResponseError`). The model is the single source of the
+  payload shape: `update_payload` always carries `{"enabled": bool, "comment":
+  str|None}` because FTL's PUT replaces the row and resets a missing `comment`
+  to NULL (regression: toggling used to wipe the comment in Pi-hole, which
+  renamed the HA entity).
 
 Reliance on `HoleV6` internals (`_fetch_data`, `_session_id`, `_csrf_token`,
 `ensure_auth`, `base_url`) is the known risk → mitigated by the exact pin and by
@@ -145,6 +157,7 @@ custom_components/pi_hole_lists/
   api.py             # PiHoleV6Lists(HoleV6)
   config_flow.py     # user + reauth + options
   coordinator.py
+  models.py          # frozen PiHoleList: from_dict / update_payload / merge_update
   switch.py
   entity.py          # base entity: device info, extra attrs
   const.py
@@ -159,6 +172,8 @@ AGENTS.md
 tests/
   test_api.py        # aioresponses: auth parse, lists parse, PUT path/headers,
                      # 401 re-auth, session-validity re-auth
+  test_models.py     # from_dict parse/leniency, update_payload shape,
+                     # merge_update non-None semantics, frozen instances
   test_coordinator.py # type=block filtering, auth-failed/connection error mapping
   test_switch.py     # is_on mapping; turn_on/off + refresh; name fallbacks
                      # (comment / GitHub owner-repo / host+segment)
@@ -174,6 +189,9 @@ LICENSE              # MIT
   (+ `X-FTL-CSRF` when present), the payload echoes the list's comment,
   unwraps the `{"lists": [...]}` response, and that a 401 triggers exactly one
   re-auth retry.
+- Model (`test_models.py`): lenient `from_dict` parsing (unknown keys dropped,
+  missing `id` rejected), `update_payload` shape (comment always echoed, `null`
+  when absent), `merge_update` copying only non-`None` fields, frozen instances.
 - Integration is not tested against a live Pi-hole in CI; manual two-way sync test
   on a real instance before each release (README checklist).
 
@@ -183,6 +201,9 @@ LICENSE              # MIT
 - Pi-hole rate-limits failed logins — no probe loops anywhere.
 - `hole` internals are private API surface → exact pin; bump deliberately with tests.
 - `enabled` is global across groups — set expectations in README.
+- A malformed PUT response (missing `id`, non-parseable body) now raises
+  `HoleResponseError` — a toggle fails loudly instead of silently carrying a
+  raw dict; reads accept FTL output as trusted (only `id` is validated).
 - FTL's PUT replaces the row: a toggle must echo the list's `comment` or
   Pi-hole wipes it (which would rename the HA entity to its address fallback).
   Echoing last-polled data can also overwrite a comment changed in the Pi-hole
